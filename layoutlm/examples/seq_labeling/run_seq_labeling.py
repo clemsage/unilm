@@ -49,7 +49,7 @@ from transformers import (
     get_linear_schedule_with_warmup,
 )
 
-from layoutlm import FunsdDataset, LayoutlmConfig, LayoutlmForTokenClassification
+from layoutlm import FunsdDataset, LayoutlmConfig, LayoutlmForTokenClassification, BlstmForTokenClassification
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +65,7 @@ MODEL_CLASSES = {
     "bert": (BertConfig, BertForTokenClassification, BertTokenizer),
     "roberta": (RobertaConfig, RobertaForTokenClassification, RobertaTokenizer),
     "layoutlm": (LayoutlmConfig, LayoutlmForTokenClassification, BertTokenizer),
+    "blstm": (BertConfig, BlstmForTokenClassification, BertTokenizer)
 }
 
 
@@ -89,6 +90,8 @@ def get_labels(path):
         labels = f.read().splitlines()
     if "O" not in labels:
         labels = ["O"] + labels
+    if '' in labels:
+        labels.pop(labels.index(''))
     return labels
 
 
@@ -125,6 +128,9 @@ def train(  # noqa C901
             // args.gradient_accumulation_steps
             * args.num_train_epochs
         )
+
+    if args.logging_steps < 0:
+        args.logging_steps = len(train_dataloader) // args.gradient_accumulation_steps
 
     # Prepare optimizer and schedule (linear warmup and decay)
     no_decay = ["bias", "LayerNorm.weight"]
@@ -194,6 +200,7 @@ def train(  # noqa C901
 
     global_step = 0
     tr_loss, logging_loss = 0.0, 0.0
+    best_f1_score = 0.0
     model.zero_grad()
     train_iterator = trange(
         int(args.num_train_epochs), desc="Epoch", disable=args.local_rank not in [-1, 0]
@@ -212,9 +219,10 @@ def train(  # noqa C901
             }
             if args.model_type in ["layoutlm"]:
                 inputs["bbox"] = batch[4].to(args.device)
-            inputs["token_type_ids"] = (
-                batch[2].to(args.device) if args.model_type in ["bert", "layoutlm"] else None
-            )  # RoBERTa don"t use segment_ids
+            if args.model_type not in ["blstm"]:
+                inputs["token_type_ids"] = (
+                    batch[2].to(args.device) if args.model_type in ["bert", "layoutlm"] else None
+                )  # RoBERTa don"t use segment_ids
 
             outputs = model(**inputs)
             # model outputs are always tuple in pytorch-transformers (see doc)
@@ -267,6 +275,25 @@ def train(  # noqa C901
                             tb_writer.add_scalar(
                                 "eval_{}".format(key), value, global_step
                             )
+
+                        if results["f1"] > best_f1_score:
+                            best_f1_score = results["f1"]
+
+                            # Save model checkpoint
+                            output_dir = os.path.join(args.output_dir, "best")
+                            if not os.path.exists(output_dir):
+                                os.makedirs(output_dir)
+                            model_to_save = (
+                                model.module if hasattr(model, "module") else model
+                            )  # Take care of distributed/parallel training
+                            if hasattr(model_to_save, 'save_pretrained'):
+                                model_to_save.save_pretrained(output_dir)
+                            else:
+                                torch.save(model.state_dict(), os.path.join(output_dir, 'model.pth'))
+                            tokenizer.save_pretrained(output_dir)
+                            torch.save(args, os.path.join(output_dir, "training_args.bin"))
+                            logger.info("Saving best model to %s", output_dir)
+
                     tb_writer.add_scalar("lr", scheduler.get_lr()[0], global_step)
                     tb_writer.add_scalar(
                         "loss",
@@ -289,7 +316,10 @@ def train(  # noqa C901
                     model_to_save = (
                         model.module if hasattr(model, "module") else model
                     )  # Take care of distributed/parallel training
-                    model_to_save.save_pretrained(output_dir)
+                    if hasattr(model_to_save, 'save_pretrained'):
+                        model_to_save.save_pretrained(output_dir)
+                    else:
+                        torch.save(model.state_dict(), os.path.join(output_dir, 'model.pth'))
                     tokenizer.save_pretrained(output_dir)
                     torch.save(args, os.path.join(output_dir, "training_args.bin"))
                     logger.info("Saving model checkpoint to %s", output_dir)
@@ -308,7 +338,9 @@ def train(  # noqa C901
 
 
 def evaluate(args, model, tokenizer, labels, pad_token_label_id, mode, prefix=""):
-    eval_dataset = FunsdDataset(args, tokenizer, labels, pad_token_label_id, mode=mode)
+    eval_dataset = FunsdDataset(
+        args, tokenizer, labels, pad_token_label_id, mode=mode, nb_max_docs=-1 if mode == 'dev' else args.nb_max_docs
+    )
 
     args.eval_batch_size = args.per_gpu_eval_batch_size * max(1, args.n_gpu)
     eval_sampler = SequentialSampler(eval_dataset)
@@ -337,11 +369,10 @@ def evaluate(args, model, tokenizer, labels, pad_token_label_id, mode, prefix=""
             }
             if args.model_type in ["layoutlm"]:
                 inputs["bbox"] = batch[4].to(args.device)
-            inputs["token_type_ids"] = (
-                batch[2].to(args.device)
-                if args.model_type in ["bert", "layoutlm"]
-                else None
-            )  # RoBERTa don"t use segment_ids
+            if args.model_type not in ["blstm"]:
+                inputs["token_type_ids"] = (
+                    batch[2].to(args.device) if args.model_type in ["bert", "layoutlm"] else None
+                )  # RoBERTa don"t use segment_ids
             outputs = model(**inputs)
             tmp_eval_loss, logits = outputs[:2]
 
@@ -382,8 +413,11 @@ def evaluate(args, model, tokenizer, labels, pad_token_label_id, mode, prefix=""
         "f1": f1_score(out_label_list, preds_list),
     }
 
-    report = classification_report(out_label_list, preds_list)
-    logger.info("\n" + report)
+    try:
+        report = classification_report(out_label_list, preds_list)
+        logger.info("\n" + report)
+    except ZeroDivisionError:  # occurs if the recall or precision is zero, e.g. when no ground truth is provided
+        pass
 
     logger.info("***** Eval results %s *****", prefix)
     for key in sorted(results.keys()):
@@ -411,14 +445,6 @@ def main():  # noqa C901
         help="Model type selected in the list: " + ", ".join(MODEL_CLASSES.keys()),
     )
     parser.add_argument(
-        "--model_name_or_path",
-        default=None,
-        type=str,
-        required=True,
-        help="Path to pre-trained model or shortcut name selected in the list: "
-        + ", ".join(ALL_MODELS),
-    )
-    parser.add_argument(
         "--output_dir",
         default=None,
         type=str,
@@ -427,6 +453,13 @@ def main():  # noqa C901
     )
 
     ## Other parameters
+    parser.add_argument(
+        "--model_name_or_path",
+        default=None,
+        type=str,
+        help="Path to pre-trained model or shortcut name selected in the list: "
+        + ", ".join(ALL_MODELS),
+    )
     parser.add_argument(
         "--labels",
         default="",
@@ -530,7 +563,7 @@ def main():  # noqa C901
     )
 
     parser.add_argument(
-        "--logging_steps", type=int, default=50, help="Log every X updates steps."
+        "--logging_steps", type=int, default=50, help="Log every X updates steps. If < 0: log once per epoch"
     )
     parser.add_argument(
         "--save_steps",
@@ -584,6 +617,9 @@ def main():  # noqa C901
     parser.add_argument(
         "--server_port", type=str, default="", help="For distant debugging."
     )
+    parser.add_argument(
+        "--nb_max_docs", type=int, default=-1, help="Maximum number of documents in the training and test sets"
+    )
     args = parser.parse_args()
 
     if (
@@ -614,6 +650,12 @@ def main():  # noqa C901
         and args.local_rank in [-1, 0]
     ):
         os.makedirs(args.output_dir)
+
+    if (
+            not args.model_name_or_path
+            and (not args.tokenizer_name or not args.config_name)
+    ):
+        raise ValueError("Please provide a tokenizer and a configuration when no pre-trained model is supplied")
 
     # Setup distant debugging if needed
     if args.server_ip and args.server_port:
@@ -681,12 +723,49 @@ def main():  # noqa C901
         do_lower_case=args.do_lower_case,
         cache_dir=args.cache_dir if args.cache_dir else None,
     )
-    model = model_class.from_pretrained(
-        args.model_name_or_path,
-        from_tf=bool(".ckpt" in args.model_name_or_path),
-        config=config,
-        cache_dir=args.cache_dir if args.cache_dir else None,
-    )
+    if args.model_name_or_path:
+        best_model_path = os.path.join(args.model_name_or_path, "best")  # for dev set
+        if os.path.exists(best_model_path):
+            checkpoint = best_model_path
+        else:  # latest checkpoint
+            checkpoint = args.model_name_or_path
+
+        if hasattr(model_class, "from_pretrained"):
+            try:
+                import pdb
+                model = model_class.from_pretrained(
+                    checkpoint,
+                    from_tf=bool(".ckpt" in checkpoint),
+                    config=config,
+                    cache_dir=args.cache_dir if args.cache_dir else None,
+                )
+            except RuntimeError:  # Mismatching classifier layer
+                saved_model = model_class.from_pretrained(
+                    checkpoint,
+                    from_tf=bool(".ckpt" in checkpoint),
+                    cache_dir=args.cache_dir if args.cache_dir else None,
+                )
+                state_dict = saved_model.state_dict()
+                state_dict.pop('classifier.weight')
+                state_dict.pop('classifier.bias')
+                model = model_class.from_pretrained(
+                    checkpoint,
+                    from_tf=bool(".ckpt" in checkpoint),
+                    config=config,
+                    cache_dir=args.cache_dir if args.cache_dir else None,
+                    state_dict=state_dict
+                )
+        else:
+            model = model_class(config)
+            state_dict = torch.load(os.path.join(checkpoint, 'model.pth'))
+            try:
+                model.load_state_dict(state_dict)
+            except RuntimeError:  # Mismatching classifier layer
+                state_dict.pop('classifier.weight')
+                state_dict.pop('classifier.bias')
+                model.load_state_dict(state_dict, strict=False)
+    else:
+        model = model_class(config)
 
     if args.local_rank == 0:
         torch.distributed.barrier()  # Make sure only the first process in distributed training will download model & vocab
@@ -698,7 +777,7 @@ def main():  # noqa C901
     # Training
     if args.do_train:
         train_dataset = FunsdDataset(
-            args, tokenizer, labels, pad_token_label_id, mode="train"
+            args, tokenizer, labels, pad_token_label_id, mode="train", nb_max_docs=args.nb_max_docs
         )
         global_step, tr_loss = train(
             args, train_dataset, model, tokenizer, labels, pad_token_label_id
@@ -717,7 +796,10 @@ def main():  # noqa C901
         model_to_save = (
             model.module if hasattr(model, "module") else model
         )  # Take care of distributed/parallel training
-        model_to_save.save_pretrained(args.output_dir)
+        if hasattr(model_to_save, 'save_pretrained'):
+            model_to_save.save_pretrained(args.output_dir)
+        else:
+            torch.save(model.state_dict(), os.path.join(args.output_dir, 'model.pth'))
         tokenizer.save_pretrained(args.output_dir)
 
         # Good practice: save your training arguments together with the trained model
@@ -727,9 +809,14 @@ def main():  # noqa C901
     results = {}
     if args.do_eval and args.local_rank in [-1, 0]:
         tokenizer = tokenizer_class.from_pretrained(
-            args.output_dir, do_lower_case=args.do_lower_case
+            args.tokenizer_name if args.tokenizer_name else args.model_name_or_path,
+            do_lower_case=args.do_lower_case
         )
-        checkpoints = [args.output_dir]
+        best_model_path = os.path.join(args.output_dir, "best")  # for dev set
+        if os.path.exists(best_model_path):
+            checkpoints = [best_model_path]
+        else:  # latest checkpoint
+            checkpoints = [args.output_dir]
         if args.eval_all_checkpoints:
             checkpoints = list(
                 os.path.dirname(c)
@@ -743,7 +830,11 @@ def main():  # noqa C901
         logger.info("Evaluate the following checkpoints: %s", checkpoints)
         for checkpoint in checkpoints:
             global_step = checkpoint.split("-")[-1] if len(checkpoints) > 1 else ""
-            model = model_class.from_pretrained(checkpoint)
+            if hasattr(model_class, "from_pretrained"):
+                model = model_class.from_pretrained(checkpoint)
+            else:
+                model = model_class(config)
+                model.load_state_dict(torch.load(os.path.join(checkpoint, 'model.pth')))
             model.to(args.device)
             result, _ = evaluate(
                 args,
@@ -764,9 +855,22 @@ def main():  # noqa C901
 
     if args.do_predict and args.local_rank in [-1, 0]:
         tokenizer = tokenizer_class.from_pretrained(
-            args.model_name_or_path, do_lower_case=args.do_lower_case
+            args.tokenizer_name if args.tokenizer_name else args.model_name_or_path,
+            do_lower_case=args.do_lower_case
         )
-        model = model_class.from_pretrained(args.output_dir)
+
+        best_model_path = os.path.join(args.output_dir, "best")  # for dev set
+        if os.path.exists(best_model_path):
+            checkpoint = best_model_path
+        else:  # latest checkpoint
+            checkpoint = args.output_dir
+
+        if hasattr(model_class, "from_pretrained"):
+            model = model_class.from_pretrained(checkpoint)
+        else:
+            model = model_class(config)
+            model.load_state_dict(torch.load(os.path.join(checkpoint, 'model.pth')))
+
         model.to(args.device)
         result, predictions = evaluate(
             args, model, tokenizer, labels, pad_token_label_id, mode="test"
@@ -782,7 +886,7 @@ def main():  # noqa C901
         )
         with open(output_test_predictions_file, "w", encoding="utf8") as writer:
             with open(
-                os.path.join(args.data_dir, "test.txt"), "r", encoding="utf8"
+                os.path.join(args.data_dir, "test_image.txt"), "r", encoding="utf8"
             ) as f:
                 example_id = 0
                 for line in f:
@@ -795,6 +899,8 @@ def main():  # noqa C901
                             line.split()[0]
                             + " "
                             + predictions[example_id].pop(0)
+                            + " "
+                            + os.path.splitext(line.split()[-1])[0]
                             + "\n"
                         )
                         writer.write(output_line)

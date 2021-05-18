@@ -213,3 +213,6 @@ dmypy.json
 /outputs
 /models
 /data
+pre-trained-models/
+examples/seq_labeling/output
+examples/seq_labeling/runs

@@ -1,5 +1,6 @@
 import logging
 import os
+import random
 
 import torch
 from torch.utils.data import Dataset
@@ -8,16 +9,17 @@ logger = logging.getLogger(__name__)
 
 
 class FunsdDataset(Dataset):
-    def __init__(self, args, tokenizer, labels, pad_token_label_id, mode):
+    def __init__(self, args, tokenizer, labels, pad_token_label_id, mode, nb_max_docs=-1):
         if args.local_rank not in [-1, 0] and mode == "train":
             torch.distributed.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
 
         # Load data features from cache or dataset file
+        model_name_or_path = args.model_name_or_path if args.model_name_or_path else args.config_name
         cached_features_file = os.path.join(
             args.data_dir,
             "cached_{}_{}_{}".format(
                 mode,
-                list(filter(None, args.model_name_or_path.split("/"))).pop(),
+                list(filter(None, model_name_or_path.split("/"))).pop(),
                 str(args.max_seq_length),
             ),
         )
@@ -26,7 +28,14 @@ class FunsdDataset(Dataset):
             features = torch.load(cached_features_file)
         else:
             logger.info("Creating features from dataset file at %s", args.data_dir)
-            examples = read_examples_from_file(args.data_dir, mode)
+            examples, file_examples = read_examples_from_file(args.data_dir, mode)
+            if nb_max_docs > 0:
+                files = list(file_examples.keys())
+                random.shuffle(files)
+                files = files[:nb_max_docs]
+                example_ids = [file_examples[file] for file in files]
+                example_ids = sum(example_ids, [])
+                examples = [examples[example_id] for example_id in example_ids]
             features = convert_examples_to_features(
                 examples,
                 labels,
@@ -101,6 +110,12 @@ class InputExample(object):
         self.file_name = file_name
         self.page_size = page_size
 
+    def __str__(self):
+        return repr(self)
+
+    def __repr__(self):
+        return f"InputExample({self.guid}, {self.words}, {self.labels}, {self.boxes}, {self.actual_bboxes}, {self.file_name}, {self.page_size})"
+
 
 class InputFeatures(object):
     """A single set of features of data."""
@@ -137,6 +152,7 @@ def read_examples_from_file(data_dir, mode):
     image_file_path = os.path.join(data_dir, "{}_image.txt".format(mode))
     guid_index = 1
     examples = []
+    file_examples = {}
     with open(file_path, encoding="utf-8") as f, open(
         box_file_path, encoding="utf-8"
     ) as fb, open(image_file_path, encoding="utf-8") as fi:
@@ -160,6 +176,9 @@ def read_examples_from_file(data_dir, mode):
                             page_size=page_size,
                         )
                     )
+                    if file_name not in file_examples:
+                        file_examples[file_name] = []
+                    file_examples[file_name].append(guid_index - 1)
                     guid_index += 1
                     words = []
                     boxes = []
@@ -200,7 +219,10 @@ def read_examples_from_file(data_dir, mode):
                     page_size=page_size,
                 )
             )
-    return examples
+            if file_name not in file_examples:
+                file_examples[file_name] = []
+            file_examples[file_name].append(guid_index - 1)
+    return examples, file_examples
 
 
 def convert_examples_to_features(

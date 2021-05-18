@@ -19,6 +19,8 @@ setup(
         "lxml==4.5.1",
         "seqeval==0.0.12",
         "Pillow==7.1.2",
+        "editdistance==0.5.3",
+        "seaborn==0.11.1"
     ],
     extras_require={
         "dev": ["flake8==3.8.2", "isort==4.3.21", "black==19.10b0", "pre-commit==2.4.0"]

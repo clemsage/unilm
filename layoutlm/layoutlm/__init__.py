@@ -5,3 +5,6 @@ from .modeling.layoutlm import (
     LayoutlmForSequenceClassification,
     LayoutlmForTokenClassification,
 )
+from .modeling.blstm import (
+    BlstmForTokenClassification
+)
