@@ -10,7 +10,7 @@ Yiheng Xu, Minghao Li, Lei Cui, Shaohan Huang, Furu Wei, Ming Zhou, [KDD 2020](h
 
 This repository is intended to provide insights on how a pre-trained language model like LayoutLM behaves when learning 
 to perform these document analysis tasks from **few** annotated documents. As yet, we only assess Information Extraction 
-(IE) tasks with experiments on the [SROIE benchmark]((https://rrc.cvc.uab.es/?ch=13)), which evaluates the ability 
+(IE) tasks with experiments on the [SROIE benchmark](https://rrc.cvc.uab.es/?ch=13), which evaluates the ability 
 to retrieve the company name and address, the total amount and date within receipts of diverse layouts. The classical 
 approach for extracting information from documents is through sequence labeling with a classification head sitting 
 on top of a neural encoder delivering contextualized representations of the document tokens.

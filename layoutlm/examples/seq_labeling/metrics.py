@@ -8,7 +8,7 @@ import argparse
 def aggregate_few_shot_experiments(args):
     metric_values = {}
     metric_values["SROIE"] = {  # For following seeds: [42, 43, 44, 45, 46]
-        "Pre-trained": {
+        "PreTrained": {
             "recall": np.array(
                 [
                     [0.6347, 0.7183, 0.8321, 0.8595, 0.8927, 0.9171, 0.9431],
@@ -37,7 +37,7 @@ def aggregate_few_shot_experiments(args):
                 ]
             ),
         },
-        "From scratch": {
+        "Random": {
             "recall": np.array(
                 [
                     [0.0058, 0.0310, 0.0670, 0.1585, 0.2601, 0.3465, 0.4669],
@@ -97,7 +97,7 @@ def aggregate_few_shot_experiments(args):
         },
     }
 
-    models = ["Pre-trained", "From scratch", "BLSTM"]
+    models = ["PreTrained", "Random", "BLSTM"]
     nbs_docs = {}
     nbs_docs["SROIE"] = [8, 16, 32, 64, 128, 256, 600]
 

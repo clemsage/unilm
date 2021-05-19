@@ -4,10 +4,10 @@ the data efficiency of pre-trained language models when fine-tuned for document 
 
 As yet, this codebase is used to fine-tune and evaluate the 
 [LayoutLM (v1)](https://github.com/microsoft/unilm/tree/master/layoutlm) model on the Scanned Receipts OCR 
-and Information Extraction [(SROIE) benchmark]((https://rrc.cvc.uab.es/?ch=13)) and compare its extraction 
+and Information Extraction [(SROIE) benchmark](https://rrc.cvc.uab.es/?ch=13) and compare its extraction 
 performance with two baseline models that do not leverage pre-training.
 
-For further details, please refer to the inner Readme file, located in the layoutlm folder.
+For further details, please refer to the inner Readme file, located in the `layoutlm` folder.
 
 ### License
 This project is licensed under the license found in the LICENSE file in the root directory of this source tree.
