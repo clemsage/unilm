@@ -96,6 +96,21 @@ shaded regions around the means. We note that the convergence of LayoutLM is rea
 efficient than the fully supervised models since, in the toughest data conditions, LayoutLM needs around 4 times fewer 
 annotated documents than the BLSTM model for reaching the same level of performance.
 
+## Citation
+
+If you find our results useful in your research, please cite the following paper:
+
+``` latex
+@inproceedings{sage2021data,
+  title   = {Data-Efficient Information Extraction from Documents with Pre-Trained Language Models},
+  author  = {Sage, Cl{\'e}ment and Douzon, Thibault and Aussem, Alexandre and Eglin, V{\'e}ronique and Elghazel, Haytham and Duffner, Stefan and Garcia, Christophe and Espinas, J{\'e}r{\'e}my},
+  journal = {Proceedings of the First Workshop on Document Images and Language (DIL)},
+  year    = {2021}
+}
+```
+
+In this paper, we have also conducted experiments on a dataset of real-world documents that unfortunately cannot be released here. Particularly, we have shown that the few-shot IE performance is improved on this private dataset when fine-tuning LayoutLM on the full SROIE training set beforehand. Please refer to our paper for more details about these experiments.
+
 ### License
 
 This project is licensed under the license found in the LICENSE file in the root directory of this source tree.
